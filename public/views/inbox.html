@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <title>Inbox</title>
+</head>
+<body>
+<div class="container mt-4">
+    <h4 id="title">Inbox</h4>
+    <div class="row mt-3">
+        <!-- Conversations -->
+        <div class="col-md-4">
+            <div class="d-flex justify-content-between align-items-center">
+                <h6 class="mb-0">Conversations</h6>
+                <button class="btn btn-sm btn-outline-secondary" id="refreshInbox">Refresh</button>
+            </div>
+            <ul class="list-group mt-2" id="threadList"></ul>
+        </div>
+
+        <!-- Friends -->
+        <div class="col-md-4">
+            <div class="d-flex justify-content-between align-items-center">
+                <h6 class="mb-0">Friends (online)</h6>
+                <button class="btn btn-sm btn-outline-secondary" id="refreshFriends">Refresh</button>
+            </div>
+            <ul class="list-group mt-2" id="friendsList"></ul>
+        </div>
+
+        <!-- Rooms -->
+        <div class="col-md-4">
+            <div class="d-flex justify-content-between align-items-center">
+                <h6 class="mb-0">Rooms</h6>
+                <button class="btn btn-sm btn-outline-secondary" id="refreshRooms">Refresh</button>
+            </div>
+
+            <!-- Create room -->
+            <div class="input-group input-group-sm mt-2">
+                <label for="newRoomName"></label><input id="newRoomName" class="form-control" placeholder="Create a room, e.g. project/a">
+                <button class="btn btn-success" id="btnCreateRoom">Create</button>
+            </div>
+
+            <ul class="list-group mt-2" id="roomsList"></ul>
+        </div>
+    </div>
+</div>
+
+<script>
+    const url = new URL(location.href);
+    const nick = url.searchParams.get("nick") || prompt("Your nick?");
+    $("#title").text(`Inbox — ${nick}`);
+    const ws = new WebSocket(`ws://${location.host}/api/ws/register/${encodeURIComponent(nick)}`);
+
+    const $thread  = $("#threadList");
+    const $friends = $("#friendsList");
+    const $rooms   = $("#roomsList");
+
+    function safe(s){ return $("<div>").text(s||"").html(); }
+
+    // ---------- Conversations ----------
+    function loadInbox(){
+        $.getJSON(`/api/inbox/${encodeURIComponent(nick)}`, (threads)=>{
+            $thread.empty();
+            threads.forEach(t=>{
+                const badge = t.unread>0 ? `<span class="badge bg-danger rounded-pill">${t.unread}</span>` : "";
+                const li = $(`
+          <li class="list-group-item d-flex justify-content-between align-items-center thread-item"
+              data-kind="${safe(t.kind)}" data-title="${safe(t.title)}" style="cursor:pointer;">
+            <span>[${safe(t.kind)}] ${safe(t.title)}<br>
+              <small class="text-muted">${safe(t.last_body||"")}</small></span>
+            ${badge}
+          </li>
+        `);
+                $thread.append(li);
+            });
+        });
+    }
+
+    // 委托：进入会话
+    $thread.off("click").on("click", ".thread-item", function(){
+        const kind  = $(this).data("kind");
+        const title = $(this).data("title");
+        if(kind === "private"){
+            location.href = `/private?nick=${encodeURIComponent(nick)}&peer=${encodeURIComponent(title)}`;
+        }else{
+            location.href = `/group?nick=${encodeURIComponent(nick)}&room=${encodeURIComponent(title)}`;
+        }
+    });
+
+    // ---------- Friends ----------
+    function loadFriends(){
+        $.getJSON(`/api/clients?exclude=${encodeURIComponent(nick)}`, (users)=>{
+            $friends.empty();
+            users.forEach(u=>{
+                const li = $(`
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <span>${safe(u.name)} <small class="text-muted">(${safe(u.id)})</small></span>
+            <button class="btn btn-sm btn-primary friend-chat" data-peer="${safe(u.name)}">Chat</button>
+          </li>
+        `);
+                $friends.append(li);
+            });
+        });
+    }
+
+    // 委托：与好友发起私聊
+    $friends.off("click").on("click", ".friend-chat", function(){
+        const peer = $(this).data("peer");
+        location.href = `/private?nick=${encodeURIComponent(nick)}&peer=${encodeURIComponent(peer)}`;
+    });
+
+    // ---------- Rooms ----------
+    function loadRooms(){
+        $.getJSON(`/api/rooms?nick=${encodeURIComponent(nick)}`, (rooms)=>{
+            $rooms.empty();
+            rooms.forEach(r=>{
+                // r: { room, subscribed, owner, is_owner }
+                const ownerBadge = r.is_owner ? `<span class="badge bg-info me-2">owner</span>` : "";
+                const actions = r.is_owner
+                    ? `<button class="btn btn-secondary room-enter" data-room="${safe(r.room)}">Enter</button>
+             <button class="btn btn-danger room-delete" data-room="${safe(r.room)}">Delete</button>`
+                    : (r.subscribed
+                        ? `<button class="btn btn-secondary room-enter" data-room="${safe(r.room)}">Enter</button>
+                 <button class="btn btn-outline-danger room-unsub" data-room="${safe(r.room)}">Unsub</button>`
+                        : `<button class="btn btn-success room-sub" data-room="${safe(r.room)}">Subscribe</button>`);
+
+                const li = $(`
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <span>${ownerBadge}# ${safe(r.room)}
+              ${r.owner ? `<small class="text-muted"> (owner: ${safe(r.owner)})</small>` : ""}</span>
+            <span class="btn-group btn-group-sm">${actions}</span>
+          </li>
+        `);
+                $rooms.append(li);
+            });
+        });
+    }
+
+    // 委托：Rooms 区按钮
+    $rooms
+        .off("click", ".room-enter").on("click", ".room-enter", function(){
+        const room = $(this).data("room");
+        location.href = `/group?nick=${encodeURIComponent(nick)}&room=${encodeURIComponent(room)}`;
+    })
+        .off("click", ".room-sub").on("click", ".room-sub", function(){
+        const room = $(this).data("room");
+        $.post(`/api/room/subscribe?nick=${encodeURIComponent(nick)}&room=${encodeURIComponent(room)}`, ()=>{
+            loadRooms(); loadInbox();
+        }).fail(()=> alert("Subscribe failed"));
+    })
+        .off("click", ".room-unsub").on("click", ".room-unsub", function(){
+        const room = $(this).data("room");
+        $.post(`/api/room/unsubscribe?nick=${encodeURIComponent(nick)}&room=${encodeURIComponent(room)}`, ()=>{
+            loadRooms(); loadInbox();
+        }).fail((xhr)=>{
+            if(xhr.status===403) alert("Owner cannot unsubscribe. Use Delete instead.");
+            else alert("Unsubscribe failed");
+        });
+    })
+        .off("click", ".room-delete").on("click", ".room-delete", function(){
+        const room = $(this).data("room");
+        if(!confirm(`Delete room "${room}" ? This will remove it for everyone.`)) return;
+        $.post(`/api/room/delete?nick=${encodeURIComponent(nick)}&room=${encodeURIComponent(room)}`, ()=>{
+            loadRooms(); loadInbox();
+        }).fail(()=> alert("Delete failed"));
+    });
+
+    // 创建房间（只绑定一次）
+    $("#btnCreateRoom").off("click").on("click", ()=>{
+        const name = $("#newRoomName").val().trim();
+        if(!name) return;
+        $.post(`/api/room/create?nick=${encodeURIComponent(nick)}&room=${encodeURIComponent(name)}`, ()=>{
+            $("#newRoomName").val("");
+            loadRooms(); loadInbox();
+        }).fail((xhr)=>{
+            if(xhr.status===409) alert("Room already exists.");
+            else alert("Create failed");
+        });
+    });
+
+    // 刷新按钮（只绑定一次）
+    $("#refreshInbox").off("click").on("click", loadInbox);
+    $("#refreshFriends").off("click").on("click", loadFriends);
+    $("#refreshRooms").off("click").on("click", loadRooms);
+
+    // WS 收到 inbox 更新信号时只刷新 Conversations
+    ws.onmessage = (e)=>{
+        try{
+            const msg = JSON.parse(e.data||"{}");
+            if(msg.kind === "inbox_update"){
+                loadInbox();
+            }
+        }catch(_){}
+    };
+
+    // 初始加载
+    loadInbox(); loadFriends(); loadRooms();
+</script>
+</body>
+</html>

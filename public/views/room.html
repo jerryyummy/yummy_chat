@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://code.jquery.com/jquery-2.1.1.min.js"></script>
+    <title>Pelusa chat</title>
+</head>
+<body>
+<div class="container mt-5">
+    <h3>Welcome, {{ .nick }} 👋</h3>
+    <div class="row mt-4">
+        <!-- 聊天区 -->
+        <div class="col-8">
+            <div class="mb-2">
+                <label class="form-label">Chat Mode</label><br>
+                <label class="me-3"><input type="radio" name="mode" value="group" checked> 群聊</label>
+                <label><input type="radio" name="mode" value="private"> 私聊</label>
+            </div>
+
+            <div class="mb-2">
+                <label class="form-label">Destination</label>
+                <input id="destination" class="form-control form-control-sm" type="text" placeholder="Destination Id（仅私聊需要）">
+                <div class="form-text" id="selectedUserHint">未选择目标用户，可手动输入 ID 或在右侧点击用户</div>
+            </div>
+
+            <div class="mb-2">
+                <label class="form-label">Message</label>
+                <input id="message_content" class="form-control form-control-sm" type="text" placeholder="Message...">
+            </div>
+            <button class="btn btn-dark btn-sm" id="sendTest">Send</button>
+
+            <div class="border rounded p-2 mt-3" style="height: 360px; overflow:auto;">
+                <div id="messages"></div>
+            </div>
+        </div>
+
+        <!-- 在线用户栏 -->
+        <div class="col-4">
+            <div class="d-flex align-items-center justify-content-between">
+                <h5 class="mb-0">Online Users</h5>
+                <button class="btn btn-outline-secondary btn-sm" id="refreshUsers">Refresh</button>
+            </div>
+            <ul class="list-group mt-2" id="usersList"></ul>
+        </div>
+    </div>
+</div>
+
+<script>
+    // 防止脚本重复执行导致的重复绑定/重复定时器
+    if (window.__PELUSA_CHAT_INIT__) {
+        console.warn("Pelusa chat already initialized.");
+    } else {
+        window.__PELUSA_CHAT_INIT__ = true;
+
+        const nick = "{{ .nick }}";
+        const registerUrl = "ws://localhost:3000/api/ws/register/" + encodeURIComponent(nick);
+        const conn = new WebSocket(registerUrl);
+
+        // 缓存常用选择器，避免重复查询
+        const $messages = $("#messages");
+        const $sendBtn = $("#sendTest");
+        const $msgInput = $("#message_content");
+        const $destInput = $("#destination");
+        const $usersList = $("#usersList");
+        const $refreshUsers = $("#refreshUsers");
+
+        // 工具函数：文本转义
+        const safe = (s) => $("<div>").text(s || "").html();
+
+        // 加载在线用户（不包含自己）
+        function loadUsers() {
+            $.getJSON(`/api/clients?exclude=${encodeURIComponent(nick)}`, (users) => {
+                // 渲染列表（仅替换 DOM，不在这里逐项绑定事件）
+                const items = users.map(u => (
+                    `<li class="list-group-item d-flex justify-content-between align-items-center" data-id="${safe(u.id)}" data-name="${safe(u.name)}">
+             <span>${safe(u.name)} <small class="text-muted">(${safe(u.id)})</small></span>
+             <button class="btn btn-sm btn-outline-primary user-chat-btn">Chat</button>
+           </li>`
+                ));
+                $usersList.html(items.join(""));
+            });
+        }
+
+        // 事件：刷新按钮（只绑定一次）
+        $refreshUsers.off("click").on("click", loadUsers);
+
+        // 事件：用户列表点击（事件委托，只绑定一次）
+        $usersList.off("click", ".user-chat-btn").on("click", ".user-chat-btn", function () {
+            const $li = $(this).closest("li");
+            const id = $li.data("id");
+            const name = $li.data("name");
+            $destInput.val(id);
+            $("#selectedUserHint").text(`已选择对话对象：${name} (${id})`);
+            $('input[name="mode"][value="private"]').prop("checked", true);
+        });
+
+        // 事件：发送按钮（只绑定一次）
+        $sendBtn.off("click").on("click", () => {
+            const mode = $('input[name="mode"]:checked').val(); // group or private
+            const content = $msgInput.val().trim();
+            if (!content) return;
+
+            let payload = {};
+            if (mode === "group") {
+                payload = { content, broadcast: true };
+                // UI 先回显群聊
+                $messages.append(`<p class="text-primary mb-1">[Group] You: ${safe(content)}</p>`);
+            } else {
+                const dest = $destInput.val().trim();
+                if (!dest) { alert("请选择或填写 Destination Id"); return; }
+                payload = { destination_id: dest, content, broadcast: false };
+                // UI 回显私聊
+                $messages.append(`<p class="text-primary mb-1">[Private] You → (${safe(dest)}): ${safe(content)}</p>`);
+            }
+            conn.send(JSON.stringify(payload));
+            $msgInput.val("");
+        });
+
+        // WebSocket 收消息（只赋值一次）
+        conn.onmessage = (evt) => {
+            const data = JSON.parse(evt.data || "{}");
+
+            if (data.broadcast) {
+                if ((data.origin_name || "").toLowerCase() === "manager") {
+                    // 系统广播：加入/离开
+                    $messages.append(`<p class="text-muted mb-1">${safe(data.content)}</p>`);
+                    loadUsers(); // 刷新用户列表
+                } else {
+                    // 群聊消息
+                    const from = data.origin_name ? `${data.origin_name} (${data.origin_id})` : data.origin_id;
+                    $messages.append(`<p class="text-danger mb-1">[Group] ${safe(from)}: ${safe(data.content)}</p>`);
+                }
+            } else {
+                // 私聊
+                const from = data.origin_name ? `${data.origin_name} (${data.origin_id})` : data.origin_id;
+                $messages.append(`<p class="text-danger mb-1">[Private] ${safe(data.content)} ← ${safe(from)}</p>`);
+            }
+            // 滚动到底部
+            $messages.parent()[0].scrollTop = $messages.parent()[0].scrollHeight;
+        };
+
+        // 初始加载 + 轮询（避免重复设置定时器）
+        loadUsers();
+        if (window.__PELUSA_CHAT_USERS_INTERVAL__) clearInterval(window.__PELUSA_CHAT_USERS_INTERVAL__);
+        window.__PELUSA_CHAT_USERS_INTERVAL__ = setInterval(loadUsers, 5000);
+    }
+</script>
+
+</body>
+</html>

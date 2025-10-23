@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <title>Group Chat</title>
+</head>
+<body>
+<div class="container mt-4">
+  <a href="#" id="backLink">← Back</a>
+  <h4 class="mt-2" id="title"></h4>
+  <div class="border rounded p-2 mt-3" style="height: 360px; overflow:auto;">
+    <div id="messages"></div>
+  </div>
+  <div class="mt-2 d-flex gap-2">
+    <input id="msg" class="form-control" placeholder="Type a message...">
+    <button class="btn btn-dark" id="send">Send</button>
+  </div>
+</div>
+
+<script>
+  const url = new URL(location.href);
+  const nick = url.searchParams.get("nick");
+  const room = url.searchParams.get("room") || "general";
+  $("#title").text(`# ${room}`);
+  $("#backLink").attr("href", `/inbox?nick=${encodeURIComponent(nick)}`);
+  const ws = new WebSocket(`ws://${location.host}/api/ws/register/${encodeURIComponent(nick)}`);
+
+  function threadId(){ return "g:"+room; }
+  function safe(s){return $("<div>").text(s||"").html();}
+  function scrollBottom(){
+    const box = document.querySelector(".border");
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function ensureSub(){
+    $.getJSON(`/api/rooms?nick=${encodeURIComponent(nick)}`, (rooms)=>{
+      const r = rooms.find(x=>x.room === room);
+      if(!r || !r.subscribed){
+        alert("You are not subscribed to this room. Subscribe in Inbox first.");
+        location.href = `/inbox?nick=${encodeURIComponent(nick)}`;
+      }
+    });
+  }
+  ensureSub();
+
+  $.post(`/api/inbox/read?nick=${encodeURIComponent(nick)}&thread_id=${encodeURIComponent(threadId())}`);
+
+  ws.onmessage = (e)=>{
+    try{
+      const m = JSON.parse(e.data||"{}");
+      if(!m.broadcast) return;
+      if((m.room||"") !== room && (m.room||"")!==""){ return; }
+      const from = m.origin_name || "unknown";
+      $("#messages").append(`<p class="mb-1"><b>${safe(from)}:</b> ${safe(m.content)}</p>`);
+      scrollBottom();
+    }catch(_){}
+  };
+
+  $("#send").on("click", ()=>{
+    const text = $("#msg").val().trim();
+    if(!text) return;
+    ws.send(JSON.stringify({ room: room, content: text, broadcast: true }));
+    $("#msg").val("");
+  });
+</script>
+</body>
+</html>
